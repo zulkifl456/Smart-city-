@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Waste Bins{% endblock %}
+{% block content %}
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js" integrity="sha512-q/dWJ3kcmjBLU4Qc47E4A9kTB4m3wuTY7vkFJDTZKjTs8jhyGQnaUrxa0Ytd0ssMZhbNua9hE+E7Qv1j+DyZwA==" crossorigin="anonymous"></script>
+	<script type="text/javascript" charset="utf-8">
+		var socket = io();
+		socket.on('database_update', function(msg) {
+			let data_array = msg.data;
+			console.log(data_array);
+			data_array.forEach((data) => {
+				console.log(data);
+				// Find the table row with the matching bin_id, or create a new row if it doesn't exist
+				var row = document.getElementById(data.bin_id) || document.createElement('tr');
+				row.id = data.bin_id;
+
+				// Update the row's content
+				row.innerHTML = `
+					<td>${data.bin_id}</td>
+					<td>${data.latitude}</td>
+					<td>${data.longitude}</td>
+					<td>${data.height}</td>
+					<td>${data.capacity}</td>
+					<td>${data.fill_status}</td>
+				`;
+
+				// Add the row to the table
+				document.querySelector('table').appendChild(row);
+			});
+		});
+	</script>
+
+	<h1>Waste Bins</h1>
+	<table>
+		<tr>
+			<th>Bin ID</th>
+			<th>Latitude</th>
+			<th>Longitude</th>
+			<th>Height</th>
+			<th>Capacity</th>
+			<th>Fill Status</th>
+		</tr>
+		{% for x in content %}
+			<tr id="{{x.bin_id}}">
+				<td>{{x.bin_id}}</td>
+				<td>{{x.latitude}}</td>
+				<td>{{x.longitude}}</td>
+				<td>{{x.height}}</td>
+				<td>{{x.capacity}}</td>
+				<td>{{x.fill_status}}</td>
+			</tr>
+		{% endfor %}
+	</table>
+{% endblock %}

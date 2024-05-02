@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Home Page{% endblock %}
+{% block content %}
+	<div id="map"></div>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js" integrity="sha512-q/dWJ3kcmjBLU4Qc47E4A9kTB4m3wuTY7vkFJDTZKjTs8jhyGQnaUrxa0Ytd0ssMZhbNua9hE+E7Qv1j+DyZwA==" crossorigin="anonymous"></script>
+	<script type="text/javascript" charset="utf-8">
+		// TO MAKE THE MAP APPEAR YOU MUST
+		// ADD YOUR ACCESS TOKEN FROM
+		// https://account.mapbox.com
+		mapboxgl.accessToken = 'pk.eyJ1IjoibGVpZ2hoYWxsaWRheSIsImEiOiJjanVma3E4aGMwZjk0NDVwZzFpcG84M3cwIn0.GrI8s893TPtJfjHzpMMP_A';
+		const map = new mapboxgl.Map({
+			container: 'map', // container ID
+			center: [78.08770294960448, 27.893214379838582], // starting position [lng, lat]
+			zoom: 9 // starting zoom
+		});
+		let bins = {{content|tojson|safe}}
+		bins.forEach((bin) => {
+			const marker = new mapboxgl.Marker({
+				draggable: false
+			})
+			.setLngLat(bin)
+			.addTo(map);
+		})
+		
+		let first = true;
+		function displayRoutes(data) {
+			val = data[0];
+			const route = val.geometry.coordinates;
+
+			const geojson = {
+				type: 'Feature',
+				properties: {},
+				geometry: {
+					type: 'LineString',
+					coordinates: route
+				}
+			};
+
+			// add the route layer to the map
+			map.addLayer({
+				id: 'route',
+				type: 'line',
+				source: {
+					type: 'geojson',
+					data: geojson
+				},
+				layout: {
+					'line-join': 'round',
+					'line-cap': 'round'
+				},
+				paint: {
+					'line-color': 'red',
+					'line-width': 5,
+					'line-opacity': 0.75
+				}
+			});
+		}
+		
+		async function getRoute(coordinates) {
+			console.log(first);
+			console.log(`https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${coordinates.join(";")}?steps=true&geometries=geojson&access_token=${mapboxgl.accessToken}`);
+
+			const query = await fetch(
+				`https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${coordinates.join(";")}?steps=true&geometries=geojson&access_token=${mapboxgl.accessToken}`,
+				{ method: 'GET' }
+			);
+			json = await query.json();
+			
+			const data = json.routes;
+			
+			if (first)
+				first = false;
+			else {
+				console.log("Removing layer");
+				map.removeLayer('route');
+				map.removeSource('route');
+			}
+			displayRoutes(data);
+		}
+		
+		var socket = io();
+		socket.on('database_update', function(msg) {
+			// code to update webpage with msg.data
+			console.log(msg)
+			coords = msg.coords;
+			getRoute(coords);
+		});
+	</script>
+{% endblock %}
