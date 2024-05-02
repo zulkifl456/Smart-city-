@@ -13,22 +13,25 @@ import select as sel
 import psycopg2
 import psycopg2.extensions
 
-# first_run = True
-
+# Initialize flask app and configure the socket and database
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://postgres:Postgres#1234@localhost:5432/SmartCityData'
 db = SQLAlchemy(app)
 CORS(app, resoures={r"/endpoint":{"origins":"*"}})
-# app.config['CORS_HEADERS'] = 'Content-Type'
-# executor = Executor(app)
 socketio = SocketIO(app)
 
+# --------------------------------------------------------------------------------------------------------------------------------------------
+
+# functions that interact with th database
+
 def getTrashVansLocation():
+    # Fetch data from the TrashVan table of the database
     return [{
         "lat": 27.902966567198106,
         "lng": 78.07626253349594
     }]
 
+# function called whenever there is a change in the table WasteBin of the database
 def background_task():
     with app.app_context():
         db.session.begin()
@@ -59,6 +62,11 @@ def background_task():
                 coords.append([results[bin-1].longitude, results[bin-1].latitude])
             socketio.emit('database_update', {'data': [result.to_dict() for result in results], 'coords': coords}, namespace='/')
 
+# --------------------------------------------------------------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------------------------------------------------------------
+
+# sqlalchemy classes corresponding to the database tables
+
 class WasteBin(db.Model):
     __tablename__ = 'WasteBin'
     bin_id = db.Column(db.Integer, primary_key=True)
@@ -71,12 +79,10 @@ class WasteBin(db.Model):
     def to_dict(self):
         return {c.key: getattr(self, c.key) for c in inspect(self).mapper.column_attrs}
 
-# @app.before_request
-# def activate_job():
-    # global first_run
-    # if first_run:
-        # executor.submit(background_task)
-        # first_run = False
+# --------------------------------------------------------------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------------------------------------------------------------
+
+# Server routes
 
 @app.route('/new_connection', methods=['POST'])
 def register_new_bin():
@@ -134,15 +140,6 @@ def receive_data():
     
     return "Data received"
 
-@app.route('/test', methods=['GET'])
-def test():
-    stmt = select(WasteBin.bin_id, WasteBin.latitude, WasteBin.longitude)
-    with db.session.begin():
-        results = db.session.execute(stmt.order_by(WasteBin.bin_id)).all()
-    for result in results:
-        print(f"bin_id = {result.bin_id}, latitude = {result.latitude}, longitude = {result.longitude}")
-    return "success"
-
 @app.route('/waste_bins', methods=['GET'])
 def waste_bins():
     stmt = select(WasteBin)
@@ -158,6 +155,11 @@ def home():
         results = db.session.execute(stmt.order_by(WasteBin.bin_id)).all()
     markers = [{'lng': bin.longitude, 'lat': bin.latitude} for bin in results]
     return render_template("index.html", content = markers)
+
+# --------------------------------------------------------------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------------------------------------------------------------
+
+# Thread runningly continuously in the background, listening to any update in the database
 
 def listen_for_notifications():
     print("listen_for_notifications function called")
@@ -176,25 +178,17 @@ def listen_for_notifications():
                 while conn.notifies:
                     notify = conn.notifies.pop(0)
                     print("Got NOTIFY:", notify.pid, notify.channel, notify.payload)
-                    # Emit SocketIO event to the client
-                    # socketio.sleep(5)
-                    # socketio.emit('database_update', {'data': 'Updated data'}, namespace='/')
-                    # Run your background task here...
+                    
+                    # Call the background task for the waste bin
                     background_task()
 
 thread = threading.Thread(target=listen_for_notifications)
 thread.start()
 
+# --------------------------------------------------------------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------------------------------------------------------------
+
 if __name__ == "__main__":
     
     with app.app_context():
-    # socketio.start_background_task(listen_for_notifications)
         socketio.run(app, host='0.0.0.0', port=5000)
-    # t1 = threading.Thread(target=server_run)
-    # t2 = threading.Thread(target=square)
-
-    # t2.start()
-    # t1.start()
-
-    # t2.join()
-    
