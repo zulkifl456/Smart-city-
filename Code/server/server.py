@@ -1,194 +1,128 @@
-from flask import Flask, request, jsonify, redirect, url_for, render_template
-from flask_cors import CORS, cross_origin
-from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy import select, update
-from sqlalchemy.inspection import inspect
-from utils import findIndex, update_adjacency_matrix, createSubGraph, dijkstra, getDist
-# from flask_executor import Executor
-from flask_socketio import SocketIO
-import time
-import threading
-import select as sel
-import psycopg2
-import psycopg2.extensions
+import cv2
+import numpy as np
+import face_recognition
+import os
+from datetime import datetime
+from flask import Flask, render_template, Response
+from playsound import playsound
+import pygame
+from werkzeug.utils import secure_filename
 
-# Initialize flask app and configure the socket and database
+UPLOAD_FOLDER = r'C:\Users\Zainab\Desktop\Face-Recognition-Criminals\IMAGE_FILES'
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+
+pygame.mixer.init()
+alert_sound = pygame.mixer.Sound("alert_sound.wav")
+
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://postgres:Postgres#1234@localhost:5432/SmartCityData'
-db = SQLAlchemy(app)
-CORS(app, resoures={r"/endpoint":{"origins":"*"}})
-socketio = SocketIO(app)
+app.secret_key = "secret key"
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# --------------------------------------------------------------------------------------------------------------------------------------------
 
-# functions that interact with th database
+@app.route('/')
+def upload_file():
+    return render_template('upload.html')
 
-def getTrashVansLocation():
-    # Fetch data from the TrashVan table of the database
-    return [{
-        "lat": 27.902966567198106,
-        "lng": 78.07626253349594
-    }]
 
-# function called whenever there is a change in the table WasteBin of the database
-def background_task():
-    with app.app_context():
-        db.session.begin()
-        print("Background Task")
-        trashVans = getTrashVansLocation()
-        stmt = select(WasteBin)
-        results = db.session.execute(stmt.order_by(WasteBin.bin_id)).scalars().all()
-        print(results[0].bin_id, results[0].fill_status)
-        pickupBins = [bin.bin_id for bin in results if bin.fill_status > 50.00]
-        print(pickupBins)
-        subGraph = createSubGraph(pickupBins)
-        print(subGraph)
-        temp = []
-        for van in trashVans:
-            coords = [[van['lng'], van['lat']]]
-            for i in range(len(pickupBins)):
-                bin = results[pickupBins[i]-1]
-                dist = getDist(van, {"lat": bin.latitude, "lng": bin.longitude})
-                temp.append(dist)
-                subGraph[i].append(dist)
-            temp.append(0.0)
-            subGraph.append(temp)
-            print(subGraph)
-            _, visit_order = dijkstra(subGraph, len(subGraph)-1)
-            print(visit_order)
-            visit_order.pop(0)
-            for bin in visit_order:
-                coords.append([results[bin-1].longitude, results[bin-1].latitude])
-            socketio.emit('database_update', {'data': [result.to_dict() for result in results], 'coords': coords}, namespace='/')
+@app.route('/success', methods=['GET', 'POST'])
+def success():
+    if 'file' not in request.files:
+        return render_template('upload.html')
+    file = request.files['file']
+    if file.filename == '':
+        return render_template('upload.html')
+    if file and allowed_file(file.filename):
+        filename = secure_filename(file.filename)
+        file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+        return render_template('upload.html')
+    else:
+        return render_template('upload.html')
 
-# --------------------------------------------------------------------------------------------------------------------------------------------
-# --------------------------------------------------------------------------------------------------------------------------------------------
 
-# sqlalchemy classes corresponding to the database tables
+@app.route('/index')
+def index():
+    """Video streaming home page."""
+    return render_template('index.html')
 
-class WasteBin(db.Model):
-    __tablename__ = 'WasteBin'
-    bin_id = db.Column(db.Integer, primary_key=True)
-    latitude = db.Column(db.Float)
-    longitude = db.Column(db.Float)
-    height = db.Column(db.Float)
-    capacity = db.Column(db.Float)
-    fill_status = db.Column(db.Float)
-    
-    def to_dict(self):
-        return {c.key: getattr(self, c.key) for c in inspect(self).mapper.column_attrs}
 
-# --------------------------------------------------------------------------------------------------------------------------------------------
-# --------------------------------------------------------------------------------------------------------------------------------------------
+def gen():
+    IMAGE_FILES = []
+    filename = []
+    dir_path = r'C:\Users\Zainab\Desktop\Face-Recognition-Criminals\IMAGE_FILES'
 
-# Server routes
+    for imagess in os.listdir(dir_path):
+        img_path = os.path.join(dir_path, imagess)
+        img_path = face_recognition.load_image_file(img_path)
+        IMAGE_FILES.append(img_path)
+        filename.append(imagess.split(".", 1)[0])
 
-@app.route('/new_connection', methods=['POST'])
-def register_new_bin():
-    data = request.json
-    print(f"Received data: {data}")
-    print(f"latitude: {data['latitude']}")
-    print(f"longitude: {data['longitude']}")
-    print(f"bin_height: {data['bin_height']}")
-    print(f"bin_capacity: {data['bin_capacity']}")
-    
-    new_bin = WasteBin(
-        latitude=data['latitude'],
-        longitude=data['longitude'],
-        height=data['bin_height'],
-        capacity=data['bin_capacity'],
-        fill_status=0.0
-    )
-    
-    try:
-        db.session.add(new_bin)
-        db.session.commit()
-        response_data = {
-            'status': 'success',
-            'message': 'Bin successfully added to the database',
-            'bin_id': new_bin.bin_id
-        }
-        stmt = select(WasteBin.bin_id, WasteBin.latitude, WasteBin.longitude)
-        results = db.session.execute(stmt.order_by(WasteBin.bin_id)).all()
-        start_vertex = 0
-        if results[new_bin.bin_id-1].bin_id == new_bin.bin_id:
-            start_vertex = new_bin.bin_id
-        else:
-            start_vertex = findIndex(results, new_bin.bin_id)
-        update_adjacency_matrix(results, start_vertex)
-    except SQLAlchemyError as e:
-        error = str(e.__dict__['orig'])
-        response_data = {
-            'status': 'fail',
-            'message': error
-        }
-    
-    return jsonify(response_data)
+    def encoding_img(IMAGE_FILES):
+        encodeList = []
+        for img in IMAGE_FILES:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            encode = face_recognition.face_encodings(img)[0]
+            encodeList.append(encode)
+        return encodeList
 
-@app.route('/data', methods=['POST'])
-def receive_data():
-    data = request.json
-    print(f"Received data: {data}")
-    stmt = (
-        update(WasteBin).
-        where(WasteBin.bin_id == data['bin_id']).
-        values(fill_status = data['percent_fill'])
-    )
-    db.session.execute(stmt)
-    db.session.commit()
-    
-    return "Data received"
+    def takeRecord(name):
+        with open('criminals.csv', 'r+') as f:
+            mypeople_list = f.readlines()
+            nameList = []
+            for line in mypeople_list:
+                entry = line.split(',')
+                nameList.append(entry[0])
+            if name not in nameList:
+                now = datetime.now()
+                datestring = now.strftime('%H:%M:%S')
+                f.writelines(f'\n{name},{datestring}')
 
-@app.route('/waste_bins', methods=['GET'])
-def waste_bins():
-    stmt = select(WasteBin)
-    with db.session.begin():
-        results = db.session.execute(stmt.order_by(WasteBin.bin_id)).scalars().all()
-    return render_template("waste_bins.html", content = results)
+    encodeListknown = encoding_img(IMAGE_FILES)
 
-@app.route('/home', methods=['GET'])
-@cross_origin()
-def home():
-    stmt = select(WasteBin.bin_id, WasteBin.latitude, WasteBin.longitude)
-    with db.session.begin():
-        results = db.session.execute(stmt.order_by(WasteBin.bin_id)).all()
-    markers = [{'lng': bin.longitude, 'lat': bin.latitude} for bin in results]
-    return render_template("index.html", content = markers)
+    cap = cv2.VideoCapture(0)
 
-# --------------------------------------------------------------------------------------------------------------------------------------------
-# --------------------------------------------------------------------------------------------------------------------------------------------
+    while True:
+       
+        success, img = cap.read()
+        imgc = cv2.resize(img, (0, 0), None, 0.25, 0.25)
+        imgc = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-# Thread runningly continuously in the background, listening to any update in the database
+        fasescurrent = face_recognition.face_locations(imgc)
+        encode_fasescurrent = face_recognition.face_encodings(imgc, fasescurrent)
 
-def listen_for_notifications():
-    print("listen_for_notifications function called")
-    with app.app_context():
-        conn = psycopg2.connect(database="SmartCityData", user="postgres", password="Postgres#1234", host="localhost", port="5432")
-        conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
+        for encodeFace, faceloc in zip(encode_fasescurrent, fasescurrent):
+            matches_face = face_recognition.compare_faces(encodeListknown, encodeFace)
+            face_distence = face_recognition.face_distance(encodeListknown, encodeFace)
+            matchindex = np.argmin(face_distence)
 
-        curs = conn.cursor()
-        curs.execute("LISTEN db_event;")
+            if matches_face[matchindex]:
+                name = filename[matchindex].upper()
+                y1, x2, y2, x1 = faceloc
+                cv2.rectangle(img, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                cv2.rectangle(img, (x1, y2 - 35), (x2, y2), (255, 0, 0), 2, cv2.FILLED)
+                cv2.putText(img, name, (x1 + 6, y2 - 6), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                takeRecord(name)
 
-        while True:
-            if sel.select([conn], [], [], 5) == ([], [], []):
-                print("Timeout")
-            else:
-                conn.poll()
-                while conn.notifies:
-                    notify = conn.notifies.pop(0)
-                    print("Got NOTIFY:", notify.pid, notify.channel, notify.payload)
-                    
-                    # Call the background task for the waste bin
-                    background_task()
+        alert_sound.play()
+        frame = cv2.imencode('.jpg', img)[1].tobytes()
+        yield (b'--frame\r\n'b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+        key = cv2.waitKey(20)
+        if key == 27:
+            break
 
-thread = threading.Thread(target=listen_for_notifications)
-thread.start()
 
-# --------------------------------------------------------------------------------------------------------------------------------------------
-# --------------------------------------------------------------------------------------------------------------------------------------------
+@app.route('/video_feed')
+def video_feed():
+    """Video streaming route. Put this in the src attribute of an img tag."""
+    return Response(gen(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
 
 if __name__ == "__main__":
-    
-    with app.app_context():
-        socketio.run(app, host='0.0.0.0', port=5000)
+    print("Starting Flask Server")
+    app.run(host='127.0.0.1', port=5001, debug=True)
+    print("Flask server has been started")
+
